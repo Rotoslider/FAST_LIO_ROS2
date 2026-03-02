@@ -510,37 +510,20 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
         publish_count -= PUBFRAME_PERIOD;
     }
 
-    /**************** save map ****************/
-    /* 1. make sure you have enough memories
-    /* 2. noted that pcd save will influence the real-time performences **/
-    /*
+    /**************** dense point accumulation for PCD save ****************/
     if (pcd_save_en)
     {
         int size = feats_undistort->points.size();
-        PointCloudXYZI::Ptr laserCloudWorld( \
+        PointCloudXYZI::Ptr laserCloudWorld(
                         new PointCloudXYZI(size, 1));
 
         for (int i = 0; i < size; i++)
         {
-            RGBpointBodyToWorld(&feats_undistort->points[i], \
+            RGBpointBodyToWorld(&feats_undistort->points[i],
                                 &laserCloudWorld->points[i]);
         }
         *pcl_wait_save += *laserCloudWorld;
-
-        static int scan_wait_num = 0;
-        scan_wait_num ++;
-        if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
-        {
-            pcd_index ++;
-            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
-            pcl::PCDWriter pcd_writer;
-            cout << "current scan saved to /PCD/" << all_points_dir << endl;
-            pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
-            pcl_wait_save->clear();
-            scan_wait_num = 0;
-        }
     }
-    */
 }
 
 void publish_frame_body(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudFull_body)
@@ -609,7 +592,30 @@ void publish_map(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub
 void save_to_pcd()
 {
     pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(map_file_path, *pcl_wait_pub);
+
+    // Save dense cloud (all accumulated undistorted points in world frame)
+    if (pcl_wait_save->size() > 0) {
+        pcl_wait_save->width = pcl_wait_save->points.size();
+        pcl_wait_save->height = 1;
+        pcd_writer.writeBinary(map_file_path, *pcl_wait_save);
+        cout << "[PCD] Saved dense cloud: " << pcl_wait_save->points.size()
+             << " points to " << map_file_path << endl;
+    } else {
+        // Fallback: save ikd-tree map if dense accumulation is empty
+        PointVector storage;
+        ikdtree.flatten(ikdtree.Root_Node, storage, NOT_RECORD);
+        PointCloudXYZI cloud;
+        cloud.points = storage;
+        cloud.width = cloud.points.size();
+        cloud.height = 1;
+        if (cloud.empty()) {
+            cout << "[PCD] Warning: map is empty, nothing to save." << endl;
+            return;
+        }
+        pcd_writer.writeBinary(map_file_path, cloud);
+        cout << "[PCD] Saved ikd-tree map (fallback): " << cloud.points.size()
+             << " points to " << map_file_path << endl;
+    }
 }
 
 template<typename T>

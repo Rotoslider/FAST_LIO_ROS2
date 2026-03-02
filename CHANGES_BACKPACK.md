@@ -239,6 +239,52 @@ was measured physically but online estimation refines it during operation.
 
 ---
 
+## 8. Dense PCD Save (Fix + Enhancement)
+
+**File:** `src/laserMapping.cpp`
+
+Two changes:
+
+**a) Re-enabled dense point accumulation** (was commented out):
+
+Every frame, all undistorted points are transformed to world frame and appended to
+`pcl_wait_save`. This accumulates the full dense cloud — every point from every scan —
+not just the downsampled ikd-tree map.
+
+```cpp
+// In the main loop (was commented out, now active):
+if (pcd_save_en) {
+    // Transform all undistorted points to world frame and accumulate
+    *pcl_wait_save += *laserCloudWorld;
+}
+```
+
+**b) Rewrote `save_to_pcd()`** to save the dense cloud, with ikd-tree fallback:
+
+```cpp
+void save_to_pcd() {
+    pcl::PCDWriter pcd_writer;
+    if (pcl_wait_save->size() > 0) {
+        // Dense cloud: all accumulated points
+        pcd_writer.writeBinary(map_file_path, *pcl_wait_save);
+    } else {
+        // Fallback: flatten ikd-tree if dense accumulation is empty
+        ikdtree.flatten(...);
+        pcd_writer.writeBinary(map_file_path, cloud);
+    }
+}
+```
+
+**Why:** The original `save_to_pcd()` saved `pcl_wait_pub` which was always empty
+(required `map_en: true`). The ikd-tree map is downsampled (`filter_size_map: 0.5` =
+one point per 50cm cube) — unusable for tree measurement. The dense accumulation saves
+every point at full resolution.
+
+**Memory note:** With `point_filter_num: 1` and Ouster OS0-32 at 10Hz, expect ~250K
+points/sec = ~150M points for a 10-minute scan = ~2-3 GB RAM. Fine for 16+ GB systems.
+
+---
+
 ## Summary of Changes
 
 | # | Change | File(s) | Impact |
@@ -250,6 +296,8 @@ was measured physically but online estimation refines it during operation.
 | 5 | RViz visualization | fastlio.rviz | Better point cloud display |
 | 6 | Dense publish | mid360.yaml | Full cloud output |
 | 7 | Backpack configs | config/*_backpack.yaml | Hardware-specific tuning |
+| 8 | Dense PCD save | laserMapping.cpp | **Fix** — dense cloud for tree measurement |
+| 9 | point_filter_num: 1 | config/*_backpack.yaml | Keep all raw points (was 3 = keep 1/3) |
 
 ---
 
@@ -260,7 +308,7 @@ Modified:
   src/preprocess.h         # Ring field fix + MID-360 types
   src/preprocess.cpp       # MID-360 handler
   src/IMU_Processing.hpp   # Gravity alignment
-  src/laserMapping.cpp     # First lidar guard
+  src/laserMapping.cpp     # First lidar guard + PCD save from ikd-tree
   config/mid360.yaml       # Dense publish
   rviz/fastlio.rviz        # Visualization tuning
 
