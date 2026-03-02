@@ -190,14 +190,16 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     N ++;
   }
   // Gravity alignment: rotate initial state so Z points up
+  // NOTE: Do NOT mutate mean_acc/mean_gyr — this function is called repeatedly
+  // during init, and the running averages must stay in the body frame.
   Eigen::Quaterniond gravity_align = Eigen::Quaterniond::FromTwoVectors(mean_acc, Eigen::Vector3d::UnitZ());
-  mean_acc = gravity_align * mean_acc;
-  mean_gyr = gravity_align * mean_gyr;
 
   state_ikfom init_state = kf_state.get_x();
   init_state.rot = gravity_align;
-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  // Gravity is [0, 0, -G] in world frame by definition (gravity_align aligns Z-up)
+  init_state.grav = S2(Eigen::Vector3d(0, 0, -G_m_s2));
 
+  // Gyro bias is a sensor property — must remain in body frame (not rotated)
   init_state.bg  = mean_gyr;
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;

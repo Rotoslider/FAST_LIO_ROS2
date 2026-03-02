@@ -49,15 +49,19 @@ Added automatic gravity alignment so FAST-LIO works correctly regardless of sens
 mounting orientation.
 
 ```cpp
-// NEW: Compute rotation that aligns measured gravity with Z-up
+// Compute rotation that aligns measured gravity with Z-up
+// NOTE: Do NOT mutate mean_acc/mean_gyr — this function is called repeatedly
+// during init, and the running averages must stay in the body frame.
 Eigen::Quaterniond gravity_align =
     Eigen::Quaterniond::FromTwoVectors(mean_acc, Eigen::Vector3d::UnitZ());
-mean_acc = gravity_align * mean_acc;
-mean_gyr = gravity_align * mean_gyr;
 
 state_ikfom init_state = kf_state.get_x();
-init_state.rot = gravity_align;  // Initialize rotation to gravity-aligned frame
-init_state.grav = S2(-mean_acc / mean_acc.norm() * G_m_s2);
+init_state.rot = gravity_align;
+// Gravity is [0, 0, -G] in world frame by definition (gravity_align aligns Z-up)
+init_state.grav = S2(Eigen::Vector3d(0, 0, -G_m_s2));
+
+// Gyro bias is a sensor property — must remain in body frame (not rotated)
+init_state.bg = mean_gyr;
 ```
 
 **Why:** The backpack scanner mounts sensors at various angles:
@@ -71,6 +75,12 @@ causing drift.
 With this fix, FAST-LIO reads the IMU accelerometer during the ~1 second initialization
 window, determines which way is "down", and sets the initial rotation accordingly. This
 works for any mounting angle.
+
+**Important:** `mean_acc` and `mean_gyr` must NOT be mutated in this function because
+`IMU_init()` is called repeatedly (~10 times) during startup. Rotating these running
+averages in-place would corrupt them on subsequent calls by mixing body-frame and
+world-frame data. The gyro bias (`bg`) must also stay in the body frame — it's a hardware
+sensor property, not a spatial vector that should be transformed.
 
 **Impact:** Eliminates the need to manually compute `extrinsic_R` for the mounting angle.
 The sensor can be mounted in any orientation and FAST-LIO will auto-align to gravity.
@@ -198,7 +208,7 @@ preprocess:
     lidar_type: 3        # Ouster
     scan_line: 32        # OS0-32
     timestamp_unit: 3    # nanoseconds
-    blind: 0.5           # OS0 min range ~0.3m
+    blind: 1.5           # Ignore points within 1.5m (backpack body)
 
 mapping:
     extrinsic_est_en: false          # Fixed mount, known transform
@@ -290,14 +300,14 @@ points/sec = ~150M points for a 10-minute scan = ~2-3 GB RAM. Fine for 16+ GB sy
 | # | Change | File(s) | Impact |
 |---|--------|---------|--------|
 | 1 | Ring field uint8 to uint16 | preprocess.h | **Critical** — fixes Ouster drift |
-| 2 | Gravity alignment | IMU_Processing.hpp | Handles arbitrary mount angles |
+| 2 | Gravity alignment | IMU_Processing.hpp | Handles arbitrary mount angles (body-frame safe) |
 | 3 | MID-360 support | preprocess.h, preprocess.cpp | Enables dual-lidar setup |
 | 4 | First lidar guard | laserMapping.cpp | Prevents false sync warnings |
 | 5 | RViz visualization | fastlio.rviz | Better point cloud display |
 | 6 | Dense publish | mid360.yaml | Full cloud output |
 | 7 | Backpack configs | config/*_backpack.yaml | Hardware-specific tuning |
 | 8 | Dense PCD save | laserMapping.cpp | **Fix** — dense cloud for tree measurement |
-| 9 | point_filter_num: 1 | config/*_backpack.yaml | Keep all raw points (was 3 = keep 1/3) |
+| 9 | point_filter_num: 2 | config/ouster32_backpack.yaml | Keep every 2nd point (was 3 = keep 1/3) |
 
 ---
 
