@@ -295,6 +295,101 @@ points/sec = ~150M points for a 10-minute scan = ~2-3 GB RAM. Fine for 16+ GB sy
 
 ---
 
+## 9. MultiThreadedExecutor + QoS Fix (Critical — ROS 2 Replay Stability)
+
+**File:** `src/laserMapping.cpp`
+
+Replaced `rclcpp::spin()` (SingleThreadedExecutor) with a 2-thread
+`MultiThreadedExecutor`, added a separate callback group for subscriptions,
+and increased subscriber queue depths.
+
+```cpp
+// Before:
+rclcpp::spin(std::make_shared<LaserMappingNode>());
+
+// After:
+auto node = std::make_shared<LaserMappingNode>();
+rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
+executor.add_node(node);
+executor.spin();
+```
+
+Subscriptions now use a dedicated `MutuallyExclusive` callback group:
+```cpp
+sub_cb_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+rclcpp::SubscriptionOptions sub_opts;
+sub_opts.callback_group = sub_cb_group_;
+```
+
+QoS changes:
+```cpp
+// Before: SensorDataQoS() = BEST_EFFORT, depth 5
+// After:  QoS(200).reliable() — prevents message drops, 200 frame buffer
+sub_pcl_pc_ = this->create_subscription<...>(lid_topic, rclcpp::QoS(200).reliable(), ...);
+sub_imu_ = this->create_subscription<...>(imu_topic, rclcpp::QoS(2000).reliable(), ...);
+```
+
+Added mutex protection around `sync_packages()` to prevent race conditions:
+```cpp
+mtx_buffer.lock();
+bool synced = sync_packages(Measures);
+mtx_buffer.unlock();
+```
+
+**Why:** The original `rclcpp::spin()` uses a SingleThreadedExecutor. Subscription
+callbacks and the SLAM timer run on the same thread. During heavy IKF/ICP processing
+(50-200ms for dense Ouster clouds), all point cloud and IMU callbacks are blocked.
+With `SensorDataQoS()` (BEST_EFFORT, depth 5), the DDS layer silently drops messages
+that pile up during processing. This causes the EKF to miss frames, accumulate drift,
+and produce position jumps when it finally gets a frame.
+
+**Impact:** Eliminates position jumps and SLAM stalls during bag replay with dense
+point clouds. The fix benefits both Ouster and Livox sensors. Works on both Humble
+and Jazzy. Also improves live operation by preventing frame drops under load.
+
+---
+
+## 10. NaN Point Filtering in Ouster Handler
+
+**File:** `src/preprocess.cpp`
+
+Added `std::isfinite()` guards in both paths of `oust64_handler()`:
+
+```cpp
+if (!std::isfinite(pl_orig.points[i].x) ||
+    !std::isfinite(pl_orig.points[i].y) ||
+    !std::isfinite(pl_orig.points[i].z))
+  continue;
+```
+
+**Why:** Organized point clouds from the Ouster driver pad invalid pixels with NaN.
+FAST-LIO's range filter (`range < blind*blind`) doesn't catch NaN because IEEE 754
+NaN comparisons always return false. These NaN points leak into the EKF and IKD-Tree,
+causing SLAM divergence. The issue surfaced on Jazzy because PCL 1.14 (Ubuntu 24.04)
+preserves NaN faithfully during `pcl::fromROSMsg()`, while PCL 1.12 (Ubuntu 22.04)
+handled them differently.
+
+---
+
+## 11. Gravity Alignment Toggle
+
+**File:** `src/IMU_Processing.hpp`, `src/laserMapping.cpp`
+
+Made gravity alignment conditional via a `mapping.gravity_align_en` parameter:
+
+```yaml
+mapping:
+  gravity_align_en: true   # Set false to use original ROS 1 behavior
+```
+
+When disabled, gravity direction is taken from the IMU measurement directly without
+rotating the initial pose (original FAST-LIO behavior before change #2).
+
+**Why:** Gravity alignment adds EKF state estimation load. In some scenarios
+(especially with Ouster on constrained hardware), disabling it can improve stability.
+
+---
+
 ## Summary of Changes
 
 | # | Change | File(s) | Impact |
@@ -307,7 +402,9 @@ points/sec = ~150M points for a 10-minute scan = ~2-3 GB RAM. Fine for 16+ GB sy
 | 6 | Dense publish | mid360.yaml | Full cloud output |
 | 7 | Backpack configs | config/*_backpack.yaml | Hardware-specific tuning |
 | 8 | Dense PCD save | laserMapping.cpp | **Fix** — dense cloud for tree measurement |
-| 9 | point_filter_num: 2 | config/ouster32_backpack.yaml | Keep every 2nd point (was 3 = keep 1/3) |
+| 9 | MultiThreadedExecutor + QoS | laserMapping.cpp | **Critical** — fixes replay frame drops and position jumps |
+| 10 | NaN point filtering | preprocess.cpp | Fixes Ouster crashes on Jazzy/PCL 1.14 |
+| 11 | Gravity alignment toggle | IMU_Processing.hpp, laserMapping.cpp | Optional gravity disable for stability tuning |
 
 ---
 
@@ -316,9 +413,9 @@ points/sec = ~150M points for a 10-minute scan = ~2-3 GB RAM. Fine for 16+ GB sy
 ```
 Modified:
   src/preprocess.h         # Ring field fix + MID-360 types
-  src/preprocess.cpp       # MID-360 handler
-  src/IMU_Processing.hpp   # Gravity alignment
-  src/laserMapping.cpp     # First lidar guard + PCD save from ikd-tree
+  src/preprocess.cpp       # MID-360 handler + NaN filtering
+  src/IMU_Processing.hpp   # Gravity alignment (now toggleable)
+  src/laserMapping.cpp     # MultiThreadedExecutor, QoS, mutex, first lidar guard, PCD save
   config/mid360.yaml       # Dense publish
   rviz/fastlio.rviz        # Visualization tuning
 

@@ -1,5 +1,6 @@
 #include "preprocess.h"
 
+#include <cmath>
 #include <pcl/common/common.h>
 
 #define RETURN0 0x00
@@ -213,6 +214,8 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &
 
     for (uint i = 0; i < plsize; i++)
     {
+      if (!std::isfinite(pl_orig.points[i].x) || !std::isfinite(pl_orig.points[i].y) || !std::isfinite(pl_orig.points[i].z))
+        continue;
       double range = pl_orig.points[i].x * pl_orig.points[i].x + pl_orig.points[i].y * pl_orig.points[i].y +
                      pl_orig.points[i].z * pl_orig.points[i].z;
       if (range < (blind * blind))
@@ -267,6 +270,9 @@ void Preprocess::oust64_handler(const sensor_msgs::msg::PointCloud2::UniquePtr &
     for (int i = 0; i < pl_orig.points.size(); i++)
     {
       if (i % point_filter_num != 0)
+        continue;
+
+      if (!std::isfinite(pl_orig.points[i].x) || !std::isfinite(pl_orig.points[i].y) || !std::isfinite(pl_orig.points[i].z))
         continue;
 
       double range = pl_orig.points[i].x * pl_orig.points[i].x + pl_orig.points[i].y * pl_orig.points[i].y +

@@ -29,6 +29,7 @@
             fov_degree:    360.0
             det_range:     80.0
             extrinsic_est_en:  false
+            gravity_align_en:  true
             extrinsic_T: [ 0.0, 0.0, 0.0 ]
             extrinsic_R: [1., 0., 0.,
                         0., 1., 0.,

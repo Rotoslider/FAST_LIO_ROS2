@@ -49,6 +49,7 @@ class ImuProcess
   Eigen::Matrix<double, 12, 12> Q;
   void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
 
+  bool gravity_align_en = true;
   ofstream fout_imu;
   V3D cov_acc;
   V3D cov_gyr;
@@ -189,15 +190,23 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
 
     N ++;
   }
-  // Gravity alignment: rotate initial state so Z points up
-  // NOTE: Do NOT mutate mean_acc/mean_gyr — this function is called repeatedly
-  // during init, and the running averages must stay in the body frame.
-  Eigen::Quaterniond gravity_align = Eigen::Quaterniond::FromTwoVectors(mean_acc, Eigen::Vector3d::UnitZ());
-
   state_ikfom init_state = kf_state.get_x();
-  init_state.rot = gravity_align;
-  // Gravity is [0, 0, -G] in world frame by definition (gravity_align aligns Z-up)
-  init_state.grav = S2(Eigen::Vector3d(0, 0, -G_m_s2));
+
+  if (gravity_align_en)
+  {
+    // Gravity alignment: rotate initial state so Z points up
+    // NOTE: Do NOT mutate mean_acc/mean_gyr — this function is called repeatedly
+    // during init, and the running averages must stay in the body frame.
+    Eigen::Quaterniond gravity_align = Eigen::Quaterniond::FromTwoVectors(mean_acc, Eigen::Vector3d::UnitZ());
+    init_state.rot = gravity_align;
+    // Gravity is [0, 0, -G] in world frame by definition (gravity_align aligns Z-up)
+    init_state.grav = S2(Eigen::Vector3d(0, 0, -G_m_s2));
+  }
+  else
+  {
+    // No gravity alignment — use gravity direction as measured by the IMU
+    init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  }
 
   // Gyro bias is a sensor property — must remain in body frame (not rotated)
   init_state.bg  = mean_gyr;
